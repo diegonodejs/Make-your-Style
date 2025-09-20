@@ -10,13 +10,14 @@ import Canvas from './components/Canvas';
 import WardrobePanel from './components/WardrobeModal';
 import OutfitStack from './components/OutfitStack';
 import { generateVirtualTryOnImage, generatePoseVariation, generateHairstyleChange } from './services/geminiService';
-import { OutfitLayer, WardrobeItem } from './types';
-import { ChevronDownIcon, ChevronUpIcon } from './components/icons';
+import { OutfitLayer, SavedOutfit, WardrobeItem } from './types';
+import { BookmarkIcon, ChevronDownIcon, ChevronUpIcon } from './components/icons';
 import { defaultWardrobe } from './wardrobe';
 import Footer from './components/Footer';
 import { getFriendlyErrorMessage } from './lib/utils';
 import Spinner from './components/Spinner';
 import HairstylePanel from './components/HairstylePanel';
+import SavedOutfitsPanel from './components/SavedOutfitsPanel';
 
 const POSE_INSTRUCTIONS = [
   "Vista frontal completa, mãos nos quadris",
@@ -65,9 +66,32 @@ const App: React.FC = () => {
   const [wardrobe, setWardrobe] = useState<WardrobeItem[]>(defaultWardrobe);
   const [currentHairstyle, setCurrentHairstyle] = useState<string | null>(null);
   const [finalImageUrl, setFinalImageUrl] = useState<string | null>(null);
+  const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
   const isMobile = useMediaQuery('(max-width: 767px)');
 
   const isLoading = isProcessingGarment || isProcessingStyle;
+
+  // Load saved outfits from localStorage on initial render
+  useEffect(() => {
+    try {
+        const storedOutfits = localStorage.getItem('savedOutfits');
+        if (storedOutfits) {
+            setSavedOutfits(JSON.parse(storedOutfits));
+        }
+    } catch (error) {
+        console.error("Failed to load saved outfits from localStorage", error);
+        localStorage.removeItem('savedOutfits');
+    }
+  }, []);
+
+  // Save outfits to localStorage whenever they change
+  useEffect(() => {
+      try {
+          localStorage.setItem('savedOutfits', JSON.stringify(savedOutfits));
+      } catch (error) {
+          console.error("Failed to save outfits to localStorage", error);
+      }
+  }, [savedOutfits]);
 
   const activeOutfitLayers = useMemo(() => 
     outfitHistory.slice(0, currentOutfitIndex + 1), 
@@ -96,6 +120,14 @@ const App: React.FC = () => {
     const currentLayer = outfitHistory[currentOutfitIndex];
     return currentLayer ? Object.keys(currentLayer.poseImages) : [];
   }, [outfitHistory, currentOutfitIndex]);
+  
+  const isOutfitSaved = useMemo(() => {
+    return savedOutfits.some(saved =>
+        saved.hairstyle === currentHairstyle &&
+        saved.layers.length === activeOutfitLayers.length &&
+        saved.layers.every((layer, index) => layer.garment?.id === activeOutfitLayers[index].garment?.id)
+    );
+  }, [savedOutfits, currentHairstyle, activeOutfitLayers]);
 
   useEffect(() => {
     const applyHairstyle = async () => {
@@ -245,6 +277,34 @@ const App: React.FC = () => {
     setCurrentHairstyle(hairstyle);
   }, []);
 
+  const handleSaveOutfit = useCallback(() => {
+    if (!canvasImageUrl || isLoading || isOutfitSaved) return;
+
+    const newSavedOutfit: SavedOutfit = {
+        id: `outfit-${Date.now()}`,
+        timestamp: Date.now(),
+        layers: activeOutfitLayers,
+        hairstyle: currentHairstyle,
+        previewUrl: canvasImageUrl,
+    };
+    setSavedOutfits(prev => [newSavedOutfit, ...prev]);
+  }, [canvasImageUrl, isLoading, isOutfitSaved, activeOutfitLayers, currentHairstyle]);
+
+  const handleLoadOutfit = useCallback((outfitId: string) => {
+      if (isLoading) return;
+      const outfitToLoad = savedOutfits.find(o => o.id === outfitId);
+      if (!outfitToLoad) return;
+
+      setOutfitHistory(outfitToLoad.layers);
+      setCurrentOutfitIndex(outfitToLoad.layers.length - 1);
+      setCurrentHairstyle(outfitToLoad.hairstyle);
+      setCurrentPoseIndex(0);
+  }, [savedOutfits, isLoading]);
+
+  const handleDeleteOutfit = useCallback((outfitId: string) => {
+      setSavedOutfits(prev => prev.filter(o => o.id !== outfitId));
+  }, []);
+
   const viewVariants = {
     initial: { opacity: 0, y: 15 },
     animate: { opacity: 1, y: 0 },
@@ -303,7 +363,7 @@ const App: React.FC = () => {
                   </button>
                   <div className="p-4 md:p-6 pb-20 overflow-y-auto flex-grow flex flex-col gap-8">
                     {error && (
-                      <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded-md" role="alert">
+                      <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md" role="alert">
                         <p className="font-bold">Erro</p>
                         <p>{error}</p>
                       </div>
@@ -312,6 +372,15 @@ const App: React.FC = () => {
                       outfitHistory={activeOutfitLayers}
                       onRemoveLastGarment={handleRemoveLastGarment}
                     />
+                    <button
+                        onClick={handleSaveOutfit}
+                        disabled={isLoading || isOutfitSaved}
+                        className="w-full flex items-center justify-center text-center bg-gray-900 text-white font-semibold py-3 px-4 rounded-lg transition-all duration-200 ease-in-out hover:bg-gray-700 active:scale-95 text-base disabled:bg-gray-500 disabled:cursor-not-allowed"
+                        aria-label="Salvar look atual"
+                    >
+                        <BookmarkIcon className="w-5 h-5 mr-2" />
+                        {isOutfitSaved ? 'Look Salvo!' : 'Salvar Look'}
+                    </button>
                     <WardrobePanel
                       onGarmentSelect={handleGarmentSelect}
                       activeGarmentIds={activeGarmentIds}
@@ -321,6 +390,12 @@ const App: React.FC = () => {
                     <HairstylePanel
                       onHairstyleSelect={handleHairstyleSelect}
                       currentHairstyle={currentHairstyle}
+                      isLoading={isLoading}
+                    />
+                    <SavedOutfitsPanel
+                      savedOutfits={savedOutfits}
+                      onLoadOutfit={handleLoadOutfit}
+                      onDeleteOutfit={handleDeleteOutfit}
                       isLoading={isLoading}
                     />
                   </div>
